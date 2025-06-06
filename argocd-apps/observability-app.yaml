@@ -1,0 +1,161 @@
+# ─────────────────────────────────────────────────────────
+# OBSERVABILITY (NO CRDs)  –  Prometheus • Grafana • Loki • Tempo
+# Namespace: monitoring   IngressClass: nginx   TLS: letsencrypt-prod
+# ─────────────────────────────────────────────────────────
+#Namespace: monitoring
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+---
+# Prometheus
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prometheus
+  namespace: argocd
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: prometheus
+    targetRevision: 25.21.0        # pick a recent version
+    helm:
+      releaseName: prometheus
+      values: |
+        alertmanager:
+          enabled: false
+        server:
+          ingress:
+            enabled: true
+            ingressClassName: nginx
+            annotations:
+              cert-manager.io/cluster-issuer: letsencrypt-prod
+              nginx.ingress.kubernetes.io/ssl-redirect: "true"
+            hosts:
+              - prometheus.weatherforecastapplication.tech
+            tls:
+              - hosts:
+                  - prometheus.weatherforecastapplication.tech
+                secretName: prometheus-tls
+  syncPolicy: { automated: { prune: true, selfHeal: true } }
+---
+# Grafana
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: grafana
+  namespace: argocd
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: grafana
+    targetRevision: 7.3.10         # pick a recent version
+    helm:
+      releaseName: grafana
+      values: |
+        adminPassword: admin       # CHANGE in production
+        ingress:
+          enabled: true
+          ingressClassName: nginx
+          annotations:
+            cert-manager.io/cluster-issuer: letsencrypt-prod
+            nginx.ingress.kubernetes.io/ssl-redirect: "true"
+          hosts:
+            - grafana.weatherforecastapplication.tech
+          tls:
+            - hosts:
+                - grafana.weatherforecastapplication.tech
+              secretName: grafana-tls
+        datasources:
+          datasources.yaml:
+            apiVersion: 1
+            datasources:
+              - name: Prometheus
+                type: prometheus
+                url: http://prometheus-server.monitoring.svc.cluster.local
+                access: proxy
+                isDefault: true
+              - name: Loki
+                type: loki
+                url: http://loki.monitoring.svc.cluster.local:3100
+                access: proxy
+              - name: Tempo
+                type: tempo
+                url: http://tempo-query-frontend.monitoring.svc.cluster.local:3100
+                access: proxy
+  syncPolicy: { automated: { prune: true, selfHeal: true } }
+---
+# Loki Stack
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: loki-stack
+  namespace: argocd
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: loki-stack
+    targetRevision: 2.10.2
+    helm:
+      releaseName: loki
+      values: |
+        loki:
+          persistence:
+            enabled: false
+        promtail:
+          enabled: true
+        grafana:
+          enabled: false
+  syncPolicy: { automated: { prune: true, selfHeal: true } }
+---
+# Tempo + Alloy
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tempo
+  namespace: argocd
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: tempo-distributed
+    targetRevision: 1.7.1
+    helm:
+      releaseName: tempo
+      values: |
+        tempo:
+          metricsGenerator:
+            enabled: false
+        gateway:
+          enabled: true
+          service:
+            type: ClusterIP
+          receiver:
+            otlp:
+              protocols:
+                grpc:
+                  enabled: true
+                http:
+                  enabled: true
+        traces:
+          otlp:
+            http:
+              enabled: true
+            grpc:
+              enabled: true
+  syncPolicy: { automated: { prune: true, selfHeal: true } }
